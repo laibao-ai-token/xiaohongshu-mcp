@@ -1,5 +1,14 @@
 package xiaohongshu
 
+// 小红书“发布图文”自动化流程说明：
+// - 打开创作中心发布页，切换到“上传图文”Tab；
+// - 上传图片；
+// - 输入标题、正文与标签；
+// - 点击提交完成发布。
+//
+// 这里使用 go-rod 驱动浏览器执行页面操作；
+// 上层 service 负责图片来源处理（URL 下载/本地路径）与参数校验，这里只做页面交互。
+
 import (
 	"context"
 	"log/slog"
@@ -13,6 +22,10 @@ import (
 )
 
 // PublishImageContent 发布图文内容
+// - Title: 标题（服务层已对显示宽度做 40 限制）
+// - Content: 正文描述
+// - Tags: 话题标签（不用带 #，后续逻辑会自动补）
+// - ImagePaths: 本地图片路径（URL 已在上层被下载为本地文件）
 type PublishImageContent struct {
 	Title      string
 	Content    string
@@ -25,21 +38,26 @@ type PublishAction struct {
 }
 
 const (
+	// 创作页地址（官方发布入口）
 	urlOfPublic = `https://creator.xiaohongshu.com/publish/publish?source=official`
 )
 
+// NewPublishImageAction 打开创作页并初始化到“上传图文”界面
 func NewPublishImageAction(page *rod.Page) (*PublishAction, error) {
 
 	pp := page.Timeout(60 * time.Second)
 
+	// 导航到创作页
 	pp.MustNavigate(urlOfPublic)
 
+	// 等待上传容器可见，确保页面可交互
 	pp.MustElement(`div.upload-content`).MustWaitVisible()
 	slog.Info("wait for upload-content visible success")
 
 	// 等待一段时间确保页面完全加载
 	time.Sleep(1 * time.Second)
 
+	// 切换到“上传图文”Tab
 	createElems := pp.MustElements("div.creator-tab")
 	slog.Info("foundcreator-tab elements", "count", len(createElems))
 	for _, elem := range createElems {
@@ -65,6 +83,7 @@ func NewPublishImageAction(page *rod.Page) (*PublishAction, error) {
 	}, nil
 }
 
+// Publish 执行完整的“发布图文”流程
 func (p *PublishAction) Publish(ctx context.Context, content PublishImageContent) error {
 	if len(content.ImagePaths) == 0 {
 		return errors.New("图片不能为空")
@@ -83,6 +102,7 @@ func (p *PublishAction) Publish(ctx context.Context, content PublishImageContent
 	return nil
 }
 
+// uploadImages 选择上传文件并等待上传完成
 func uploadImages(page *rod.Page, imagesPaths []string) error {
 	pp := page.Timeout(30 * time.Second)
 
@@ -98,6 +118,7 @@ func uploadImages(page *rod.Page, imagesPaths []string) error {
 	return nil
 }
 
+// submitPublish 填写标题、正文与标签并点击提交
 func submitPublish(page *rod.Page, title, content string, tags []string) error {
 
 	titleElem := page.MustElement("div.d-input input")
@@ -124,7 +145,9 @@ func submitPublish(page *rod.Page, title, content string, tags []string) error {
 	return nil
 }
 
-// 查找内容输入框 - 使用Race方法处理两种样式
+// 查找内容输入框 - 使用 Race 方法兼容两种页面样式：
+// 1) 直接存在富文本容器 div.ql-editor；
+// 2) 通过包含占位符“输入正文描述”的 p 元素向上回溯到 role=textbox 的父元素。
 func getContentElement(page *rod.Page) (*rod.Element, bool) {
 	var foundElement *rod.Element
 	var found bool
@@ -177,6 +200,9 @@ func inputTags(contentElem *rod.Element, tags []string) {
 	}
 }
 
+// inputTag 输入单个标签：先键入“#”，随后输入标签文本；
+// 若检测到联想下拉（#creator-editor-topic-container），优先选择第一项；
+// 否则输入空格结束标签。
 func inputTag(contentElem *rod.Element, tag string) {
 	contentElem.MustInput("#")
 	time.Sleep(200 * time.Millisecond)
@@ -210,6 +236,9 @@ func inputTag(contentElem *rod.Element, tag string) {
 	time.Sleep(500 * time.Millisecond) // 等待标签处理完成
 }
 
+// findTextboxByPlaceholder 通过占位符文本“输入正文描述”定位正文输入区域：
+// 1) 遍历页面中的 p 元素，找到 data-placeholder 包含指定文本的元素；
+// 2) 自该元素向上回溯，查找最近的 role=textbox 父元素并返回。
 func findTextboxByPlaceholder(page *rod.Page) (*rod.Element, error) {
 	elements := page.MustElements("p")
 	if elements == nil {
@@ -231,6 +260,7 @@ func findTextboxByPlaceholder(page *rod.Page) (*rod.Element, error) {
 	return textboxElem, nil
 }
 
+// findPlaceholderElement 在一组 p 元素中查找 data-placeholder 含 searchText 的元素，返回首个匹配项。
 func findPlaceholderElement(elements []*rod.Element, searchText string) *rod.Element {
 	for _, elem := range elements {
 		placeholder, err := elem.Attribute("data-placeholder")
@@ -245,6 +275,7 @@ func findPlaceholderElement(elements []*rod.Element, searchText string) *rod.Ele
 	return nil
 }
 
+// findTextboxParent 自下而上回溯至最近的 role=textbox 父元素（最多向上 5 层）。
 func findTextboxParent(elem *rod.Element) *rod.Element {
 	currentElem := elem
 	for i := 0; i < 5; i++ {
