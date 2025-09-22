@@ -86,3 +86,17 @@ type PostCommentResponse struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
 }
+
+// SaveFeedsRequest 保存推荐内容请求
+type SaveFeedsRequest struct {
+	// Limit 保存前 N 条推荐，默认 10
+	Limit int `json:"limit"`
+	// OutputDir 输出目录（可选），默认使用工作目录下的 content 目录
+	OutputDir string `json:"output_dir"`
+}
+
+// SaveFeedsResponse 保存推荐内容响应
+type SaveFeedsResponse struct {
+	Saved int      `json:"saved"`
+	Files []string `json:"files"`
+}

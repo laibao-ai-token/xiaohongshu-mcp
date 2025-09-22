@@ -154,3 +154,26 @@ func healthHandler(c *gin.Context) {
 		"timestamp": "now",
 	}, "服务正常")
 }
+
+// saveRecommendedFeedsHandler 保存首页推荐前 N 条内容到本地目录
+func (s *AppServer) saveRecommendedFeedsHandler(c *gin.Context) {
+	var req SaveFeedsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondError(c, http.StatusBadRequest, "INVALID_REQUEST", "请求参数错误", err.Error())
+		return
+	}
+
+	// 默认参数
+	if req.Limit <= 0 {
+		req.Limit = 10
+	}
+
+	res, err := s.xiaohongshuService.SaveRecommendedFeedsContent(c.Request.Context(), req.Limit, req.OutputDir)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "SAVE_RECOMMENDED_FAILED", "保存推荐内容失败", err.Error())
+		return
+	}
+
+	c.Set("account", "ai-report")
+	respondSuccess(c, res, "保存推荐内容成功")
+}

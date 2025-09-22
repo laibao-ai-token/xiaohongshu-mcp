@@ -259,6 +259,23 @@ func (s *AppServer) processToolsList(request *JSONRPCRequest) *JSONRPCResponse {
 				"required": []string{"feed_id", "xsec_token", "content"},
 			},
 		},
+		{
+			"name":        "save_recommended_feeds",
+			"description": "抓取首页推荐前 N 条，按标题排序并保存为 Markdown 到指定目录",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"limit": map[string]interface{}{
+						"type":        "integer",
+						"description": "保存前 N 条，默认 10",
+					},
+					"output_dir": map[string]interface{}{
+						"type":        "string",
+						"description": "输出目录，默认工作目录下 content",
+					},
+				},
+			},
+		},
 	}
 
 	return &JSONRPCResponse{
@@ -303,6 +320,8 @@ func (s *AppServer) processToolCall(ctx context.Context, request *JSONRPCRequest
 		result = s.handleGetFeedDetail(ctx, toolArgs)
 	case "post_comment_to_feed":
 		result = s.handlePostComment(ctx, toolArgs)
+	case "save_recommended_feeds":
+		result = s.handleSaveRecommendedFeeds(ctx, toolArgs)
 	default:
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",

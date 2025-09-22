@@ -294,3 +294,62 @@ func (s *AppServer) handlePostComment(ctx context.Context, args map[string]inter
 		}},
 	}
 }
+
+// handleSaveRecommendedFeeds 处理保存首页推荐内容
+func (s *AppServer) handleSaveRecommendedFeeds(ctx context.Context, args map[string]interface{}) *MCPToolResult {
+	logrus.Info("MCP: 保存首页推荐内容")
+
+	// 解析参数
+	limit := 10
+	if v, ok := args["limit"]; ok {
+		switch tv := v.(type) {
+		case float64:
+			if int(tv) > 0 {
+				limit = int(tv)
+			}
+		case int:
+			if tv > 0 {
+				limit = tv
+			}
+		}
+	}
+
+	outputDir, _ := args["output_dir"].(string)
+
+	res, err := s.xiaohongshuService.SaveRecommendedFeedsContent(ctx, limit, outputDir)
+	if err != nil {
+		return &MCPToolResult{
+			Content: []MCPContent{{
+				Type: "text",
+				Text: "保存推荐内容失败: " + err.Error(),
+			}},
+			IsError: true,
+		}
+	}
+
+	// 以简洁文本返回结果
+	var filesText string
+	if len(res.Files) == 0 {
+		filesText = "无文件保存"
+	} else {
+		// 控制输出长度，最多列出前 10 个路径
+		max := len(res.Files)
+		if max > 10 {
+			max = 10
+		}
+		for i := 0; i < max; i++ {
+			filesText += fmt.Sprintf("%d. %s\n", i+1, res.Files[i])
+		}
+		if len(res.Files) > max {
+			filesText += fmt.Sprintf("... 共 %d 个文件", len(res.Files))
+		}
+	}
+
+	resultText := fmt.Sprintf("保存推荐内容成功：已保存 %d 个文件\n%s", res.Saved, filesText)
+	return &MCPToolResult{
+		Content: []MCPContent{{
+			Type: "text",
+			Text: resultText,
+		}},
+	}
+}

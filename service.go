@@ -3,6 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
 
 	"github.com/mattn/go-runewidth"
 	"github.com/xpzouying/headless_browser"
@@ -234,4 +239,195 @@ func (s *XiaohongshuService) PostCommentToFeed(ctx context.Context, feedID, xsec
 
 func newBrowser() *headless_browser.Browser {
 	return browser.NewBrowser(configs.IsHeadless(), browser.WithBinPath(configs.GetBinPath()))
+}
+
+// SaveRecommendedFeedsContent 抓取首页推荐前 N 条的详情内容，按标题排序保存为 Markdown 文件
+func (s *XiaohongshuService) SaveRecommendedFeedsContent(ctx context.Context, limit int, outputDir string) (*SaveFeedsResponse, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+
+	// 默认输出目录：工作目录下 content
+	if strings.TrimSpace(outputDir) == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return nil, err
+		}
+		outputDir = filepath.Join(cwd, "content")
+	}
+
+	// 为本次保存创建子目录（按时间戳），避免不同批次混在一起
+	ts := time.Now().Format("20060102_150405")
+	batchDir := filepath.Join(outputDir, ts)
+	if err := os.MkdirAll(batchDir, 0o755); err != nil {
+		return nil, err
+	}
+
+	b := newBrowser()
+	defer b.Close()
+
+	page := b.NewPage()
+	defer page.Close()
+
+	// 1) 获取首页推荐 feeds
+	feedsAction := xiaohongshu.NewFeedsListAction(page)
+	feeds, err := feedsAction.GetFeedsList(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(feeds) == 0 {
+		return &SaveFeedsResponse{Saved: 0, Files: nil}, nil
+	}
+
+	if len(feeds) > limit {
+		feeds = feeds[:limit]
+	}
+
+	// 2) 获取每条详情
+	detailAction := xiaohongshu.NewFeedDetailAction(page)
+
+	type item struct {
+		Title   string
+		Content string
+	}
+
+	items := make([]item, 0, len(feeds))
+	for _, f := range feeds {
+		d, err := detailAction.GetFeedDetail(ctx, f.ID, f.XsecToken)
+		if err != nil {
+			// 跳过失败项，继续抓取其它
+			continue
+		}
+
+		note := d.Note
+		title := strings.TrimSpace(note.Title)
+		if title == "" {
+			title = f.NoteCard.DisplayTitle
+		}
+		if title == "" {
+			title = f.ID
+		}
+
+		var sb strings.Builder
+		sb.WriteString("# ")
+		sb.WriteString(title)
+		sb.WriteString("\n\n")
+
+		sb.WriteString("- NoteID: ")
+		sb.WriteString(note.NoteID)
+		sb.WriteString("\n- Type: ")
+		sb.WriteString(note.Type)
+		if note.User.Nickname != "" {
+			sb.WriteString("\n- Author: ")
+			sb.WriteString(note.User.Nickname)
+			if note.User.UserID != "" {
+				sb.WriteString(" (@")
+				sb.WriteString(note.User.UserID)
+				sb.WriteString(")")
+			}
+		}
+		if note.InteractInfo.LikedCount != "" {
+			sb.WriteString("\n- Likes: ")
+			sb.WriteString(note.InteractInfo.LikedCount)
+		}
+		if note.IPLocation != "" {
+			sb.WriteString("\n- Location: ")
+			sb.WriteString(note.IPLocation)
+		}
+		sb.WriteString("\n\n## 内容\n\n")
+		if strings.TrimSpace(note.Desc) != "" {
+			sb.WriteString(note.Desc)
+			sb.WriteString("\n\n")
+		}
+
+		if len(note.ImageList) > 0 {
+			sb.WriteString("## 图片\n")
+			for _, img := range note.ImageList {
+				if img.URLDefault != "" {
+					sb.WriteString("- ")
+					sb.WriteString(img.URLDefault)
+					sb.WriteString("\n")
+				} else if img.URLPre != "" {
+					sb.WriteString("- ")
+					sb.WriteString(img.URLPre)
+					sb.WriteString("\n")
+				}
+			}
+			sb.WriteString("\n")
+		}
+
+		items = append(items, item{Title: title, Content: sb.String()})
+	}
+
+	if len(items) == 0 {
+		return &SaveFeedsResponse{Saved: 0, Files: nil}, nil
+	}
+
+	// 3) 按标题排序
+	sort.Slice(items, func(i, j int) bool {
+		return strings.ToLower(items[i].Title) < strings.ToLower(items[j].Title)
+	})
+
+	// 4) 保存为文件（按排序后的顺序，前缀序号确保文件名排序与标题排序一致）
+	files := make([]string, 0, len(items))
+	width := len(fmt.Sprintf("%d", len(items)))
+	for idx, it := range items {
+		safeTitle := sanitizeFilename(it.Title)
+		baseName := fmt.Sprintf("%0*d_%s.md", width, idx+1, safeTitle)
+		fullPath := filepath.Join(batchDir, baseName)
+		// 避免重名（极端情况）
+		fullPath = ensureUniquePath(fullPath)
+		if err := os.WriteFile(fullPath, []byte(it.Content), 0o644); err != nil {
+			continue
+		}
+		files = append(files, fullPath)
+	}
+
+	return &SaveFeedsResponse{Saved: len(files), Files: files}, nil
+}
+
+// sanitizeFilename 移除/替换 Windows 非法文件名字符
+func sanitizeFilename(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "untitled"
+	}
+	// 替换非法字符
+	illegal := []string{"<", ">", ":", "\"", "\\", "/", "|", "?", "*"}
+	for _, ch := range illegal {
+		name = strings.ReplaceAll(name, ch, "_")
+	}
+	// 避免 Windows 保留名
+	reserved := map[string]struct{}{
+		"CON": {}, "PRN": {}, "AUX": {}, "NUL": {},
+		"COM1": {}, "COM2": {}, "COM3": {}, "COM4": {}, "COM5": {}, "COM6": {}, "COM7": {}, "COM8": {}, "COM9": {},
+		"LPT1": {}, "LPT2": {}, "LPT3": {}, "LPT4": {}, "LPT5": {}, "LPT6": {}, "LPT7": {}, "LPT8": {}, "LPT9": {},
+	}
+	upper := strings.ToUpper(name)
+	if _, ok := reserved[upper]; ok {
+		name = name + "_"
+	}
+	// 限制长度，避免路径过长问题
+	if len(name) > 80 {
+		name = name[:80]
+	}
+	return name
+}
+
+// ensureUniquePath 如果文件已存在，则在文件名后追加 (-1), (-2) ...
+func ensureUniquePath(path string) string {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return path
+	}
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	ext := filepath.Ext(base)
+	name := strings.TrimSuffix(base, ext)
+	for i := 1; i < 1000; i++ {
+		cand := filepath.Join(dir, fmt.Sprintf("%s-(%d)%s", name, i, ext))
+		if _, err := os.Stat(cand); os.IsNotExist(err) {
+			return cand
+		}
+	}
+	return path
 }
